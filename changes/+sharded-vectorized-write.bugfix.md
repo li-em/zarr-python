@@ -1,0 +1,1 @@
+Fixed orthogonal writes to sharded arrays that index two or more axes with an integer array, such as `arr.oindex[[2, 1], [0]] = value`. The write raised `ValueError: shape mismatch`. A repeated index also stored the value of the wrong occurrence.

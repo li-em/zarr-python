@@ -57,6 +57,7 @@ from zarr.core.dtype.npy.structured import Struct
 from zarr.core.indexing import (
     BasicIndexer,
     ChunkProjection,
+    Indexer,
     SelectorTuple,
     SliceDimIndexer,
     _lexicographic_order,
@@ -397,6 +398,19 @@ class _ShardReader(ShardMapping):
                 result[coords] = None
 
         return result
+
+
+def _value_for_indexer(value: NDBuffer, indexer: Indexer) -> NDBuffer:
+    """Shape `value` like the space the indexer's out selections index.
+
+    A vectorized (coordinate or mask) indexer flattens its selection. Its out
+    selections then index a 1-D array. A value from an orthogonal parent
+    selection keeps that selection's shape instead. The decode paths undo the
+    same flattening through `sel_shape`.
+    """
+    if value.shape in ((), indexer.shape) or not hasattr(indexer, "sel_shape"):
+        return value
+    return value.reshape(indexer.shape)
 
 
 @dataclass(frozen=True)
@@ -796,13 +810,13 @@ class ShardingCodec(
         chunk_spec = self._get_chunk_spec(shard_spec)
         inner_transform = self._get_inner_chunk_transform(shard_spec)
 
-        indexer = list(
-            get_indexer(
-                selection,
-                shape=shard_shape,
-                chunk_grid=ChunkGrid.from_sizes(shard_shape, self.chunk_shape),
-            )
+        shard_indexer = get_indexer(
+            selection,
+            shape=shard_shape,
+            chunk_grid=ChunkGrid.from_sizes(shard_shape, self.chunk_shape),
         )
+        value = _value_for_indexer(value, shard_indexer)
+        indexer = list(shard_indexer)
 
         is_complete = self._is_complete_shard_write(indexer, chunks_per_shard)
 
@@ -1359,13 +1373,13 @@ class ShardingCodec(
         chunks_per_shard = self._get_chunks_per_shard(shard_spec)
         chunk_spec = self._get_chunk_spec(shard_spec)
 
-        indexer = list(
-            get_indexer(
-                selection,
-                shape=shard_shape,
-                chunk_grid=ChunkGrid.from_sizes(shard_shape, chunk_shape),
-            )
+        shard_indexer = get_indexer(
+            selection,
+            shape=shard_shape,
+            chunk_grid=ChunkGrid.from_sizes(shard_shape, chunk_shape),
         )
+        shard_array = _value_for_indexer(shard_array, shard_indexer)
+        indexer = list(shard_indexer)
 
         if self._is_complete_shard_write(indexer, chunks_per_shard):
             shard_dict = dict.fromkeys(lexicographic_order_coords(chunks_per_shard))

@@ -914,6 +914,87 @@ def test_sharding_mixed_integer_list_indexing(store: Store) -> None:
     np.testing.assert_array_equal(c3, s3)
 
 
+@pytest.mark.parametrize("store", ["memory"], indirect=["store"])
+@pytest.mark.parametrize("nested", [False, True], ids=["sharded", "nested-sharded"])
+@pytest.mark.parametrize(
+    "selection",
+    [
+        (np.array([2, 1, 1, 0]), np.array([6])),
+        (np.array([0, 3]), np.array([1, 1, 7])),
+        (np.array([3, 3, 3]), np.array([0, 2])),
+    ],
+    ids=["repeated-rows", "repeated-cols", "repeated-rows-only"],
+)
+def test_sharding_orthogonal_write_index_arrays(
+    store: Store, nested: bool, selection: tuple[npt.NDArray[np.intp], ...]
+) -> None:
+    """An orthogonal write with an integer array per axis must match numpy.
+
+    The partial-encode path derives a second indexer for the selection inside
+    the shard. That selection arrives in broadcast (``np.ix_``) form, which a
+    coordinate indexer flattens. The written values must follow it. Repeated
+    indices keep their selection order, so the last write wins.
+    """
+    shape = (8, 8)
+    src = np.arange(np.prod(shape), dtype="int64").reshape(shape)
+    ix = np.ix_(*selection)
+    value = np.arange(1000, 1000 + src[ix].size, dtype="int64").reshape(src[ix].shape)
+
+    serializer = (
+        ShardingCodec(chunk_shape=(2, 2), codecs=[ShardingCodec(chunk_shape=(2, 1))])
+        if nested
+        else ShardingCodec(chunk_shape=(2, 2))
+    )
+    arr = zarr.create_array(
+        store,
+        name="target",
+        shape=shape,
+        dtype="int64",
+        chunks=(4, 8),
+        serializer=serializer,
+        compressors=None,
+        fill_value=0,
+    )
+    arr[:] = src
+    arr.oindex[selection] = value
+
+    expected = src.copy()
+    expected[ix] = value
+    np.testing.assert_array_equal(arr[:], expected)
+
+
+@pytest.mark.parametrize("store", ["memory"], indirect=["store"])
+def test_sharding_orthogonal_write_repeated_indices_last_wins(store: Store) -> None:
+    """A repeated index takes the value of its last occurrence, as in numpy.
+
+    Grouping the shard-internal points by inner chunk keeps the selection
+    order. That grouping sort must therefore be stable.
+    """
+    shape = (4, 4, 2)
+    selection = (np.array([1, 2, 0]), np.array([1, 1, 2]), np.array([1, 1]))
+    src = np.arange(np.prod(shape), dtype="int64").reshape(shape)
+    value = np.arange(1000, 1000 + src[np.ix_(*selection)].size, dtype="int64").reshape(
+        src[np.ix_(*selection)].shape
+    )
+
+    arr = zarr.create_array(
+        store,
+        name="repeated",
+        shape=shape,
+        dtype="int64",
+        chunks=(2, 2, 1),
+        shards=shape,
+        compressors=None,
+        fill_value=0,
+    )
+    arr[:] = src
+    arr.oindex[selection] = value
+
+    expected = src.copy()
+    expected[np.ix_(*selection)] = value
+    np.testing.assert_array_equal(arr[:], expected)
+
+
 async def stored_data_and_get_order(
     codec: ShardingCodec, chunks_per_shard: tuple[int, ...]
 ) -> list[tuple[int, ...]]:

@@ -6,7 +6,7 @@ import multiprocessing as mp
 import pickle
 import re
 import sys
-from itertools import accumulate, starmap
+from itertools import accumulate, product, starmap
 from typing import TYPE_CHECKING, Any, Literal
 from unittest import mock
 
@@ -2535,6 +2535,23 @@ async def test_create_array_chunks_3d(
     shape = (10, 12, 15)
     arr = await create_array(store={}, shape=shape, chunks=chunk_input, dtype="float64")
     assert arr.write_chunk_sizes == expected
+
+
+@pytest.mark.parametrize(
+    ("shards", "numblocks"), [(None, (3, 2)), ((4, 4), (2, 1))], ids=["unsharded", "sharded"]
+)
+async def test_chunk_keys_follow_write_chunk_grid(
+    shards: tuple[int, ...] | None, numblocks: tuple[int, ...]
+) -> None:
+    """The store holds one key per write chunk. A shard is one key, whatever its inner chunks."""
+    store = MemoryStore()
+    arr = zarr.create_array(
+        store, shape=(5, 4), chunks=(2, 2), shards=shards, dtype="int32", fill_value=0
+    )
+    arr[...] = 1
+    assert tuple(len(sizes) for sizes in arr.write_chunk_sizes) == numblocks
+    expected = {"c/" + "/".join(map(str, idx)) for idx in product(*map(range, numblocks))}
+    assert {key async for key in store.list()} - {"zarr.json"} == expected
 
 
 async def test_create_array_huge_chunk_count() -> None:

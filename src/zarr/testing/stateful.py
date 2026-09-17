@@ -220,7 +220,12 @@ class ZarrHierarchyStateMachine(SyncMixin, RuleBasedStateMachine):
     def delete_chunk(self, data: DataObject) -> None:
         array = data.draw(st.sampled_from(sorted(self.all_arrays)))
         arr = zarr.open_array(path=array, store=self.model)
-        chunk_path = data.draw(chunk_paths(ndim=arr.ndim, numblocks=arr.cdata_shape, subset=False))
+        # The store holds one key per write chunk. `cdata_shape` counts inner chunks,
+        # so on a sharded array it names keys that cannot exist.
+        numblocks = tuple(len(sizes) for sizes in arr.write_chunk_sizes)
+        # A zero-length dimension holds no chunks, and so no keys.
+        assume(all(numblocks))
+        chunk_path = data.draw(chunk_paths(ndim=arr.ndim, numblocks=numblocks, subset=False))
         path = f"{array}/c/{chunk_path}"
         note(f"deleting chunk {path=!r}")
         self._sync(self.model.delete(path))

@@ -122,6 +122,66 @@ async def test_codecs_use_of_prototype() -> None:
     assert np.array_equal(expect, got)  # type: ignore[unreachable]
 
 
+@pytest.mark.parametrize(
+    "pipeline_path",
+    [
+        "zarr.core.codec_pipeline.FusedCodecPipeline",
+        "zarr.core.codec_pipeline.BatchedCodecPipeline",
+    ],
+)
+@pytest.mark.parametrize("sync_io", [True, False])
+async def test_sharding_use_of_prototype(pipeline_path: str, sync_io: bool) -> None:
+    """Inner chunks of a shard are read with the prototype of the request."""
+    store = MemoryStore()
+    if not sync_io:
+        # (an async-only store takes the async shard decode path)
+        store._supports_sync_io = False  # type: ignore[attr-defined]
+    expect = np.arange(100, dtype="uint16").reshape(10, 10)
+    my_prototype = BufferPrototype(buffer=TestBuffer, nd_buffer=NDBufferUsingTestNDArrayLike)
+    with zarr.config.set({"codec_pipeline.path": pipeline_path}):
+        a = await zarr.api.asynchronous.create_array(
+            StorePath(store) / "test_sharding_use_of_prototype",
+            shape=expect.shape,
+            chunks=(2, 2),
+            shards=(4, 4),
+            dtype=expect.dtype,
+            fill_value=0,
+        )
+        await a.setitem(selection=slice(None), value=expect)
+        for selection in [(slice(None), slice(None)), (slice(1, 3), slice(3, 9))]:
+            got = await a.getitem(selection=selection, prototype=my_prototype)
+            assert isinstance(got, TestNDArrayLike)
+            assert np.array_equal(expect[selection], got)  # type: ignore[unreachable]
+
+
+@gpu_test
+@pytest.mark.parametrize("gpu_default", [False, True])
+async def test_sharding_prototype_differs_from_default(gpu_default: bool) -> None:
+    """A sharded array reads with a prototype other than the default one, on CPU or GPU."""
+    expect = np.arange(100, dtype="uint16").reshape(10, 10)
+    read_prototype = cpu.buffer_prototype if gpu_default else gpu.buffer_prototype
+    with zarr.config.set(
+        {"buffer": "zarr.buffer.cpu.Buffer", "ndbuffer": "zarr.buffer.cpu.NDBuffer"}
+    ):
+        a = await zarr.api.asynchronous.create_array(
+            StorePath(MemoryStore()) / "test_sharding_prototype_differs_from_default",
+            shape=expect.shape,
+            chunks=(2, 2),
+            shards=(4, 4),
+            dtype=expect.dtype,
+            fill_value=0,
+        )
+        await a.setitem(selection=slice(None), value=expect)
+    # (MemoryStore holds host bytes: a GPU buffer made from them is a copy)
+    msg = "Creating a zarr.buffer.gpu.Buffer with an array that does not support the __cuda_array_interface__ for zero-copy transfers, falling back to slow copy based path"
+    with zarr.config.enable_gpu() if gpu_default else zarr.config.set({}):
+        a = await zarr.api.asynchronous.open_array(store=a.store_path)
+        with pytest.warns(ZarrUserWarning, match=msg):
+            got = await a.getitem(selection=(slice(1, 3), slice(3, 9)), prototype=read_prototype)
+    assert isinstance(got, np.ndarray if gpu_default else cp.ndarray)
+    assert np.array_equal(expect[1:3, 3:9], cp.asnumpy(got))
+
+
 @gpu_test
 async def test_codecs_use_of_gpu_prototype() -> None:
     expect = cp.zeros((10, 10), dtype="uint16", order="F")

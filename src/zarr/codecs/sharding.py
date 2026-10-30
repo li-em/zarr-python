@@ -161,11 +161,7 @@ class _ShardingByteGetter(ByteGetter):
     def get_sync(
         self, prototype: BufferPrototype | None = None, byte_range: ByteRequest | None = None
     ) -> Buffer | None:
-        if prototype is not None and prototype != default_buffer_prototype():
-            raise ValueError(
-                "Non-default buffer prototypes are not supported within shards. "
-                f"Got {prototype}, expected {default_buffer_prototype()}."
-            )
+        # (the shard was loaded with the prototype of the same request)
         value = self.shard_dict.get(self.chunk_coords)
         if value is None:
             return None
